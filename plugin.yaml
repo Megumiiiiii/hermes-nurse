@@ -1,0 +1,16 @@
+name: nurse
+version: 0.1.0
+description: >-
+  Supervisor-aware service nurse for Hermes: reads pm2 and systemd in one table,
+  triages crash logs into a diagnosis (OOM, port conflict, missing env, exit code,
+  crash loop), and repairs services with a cooldown-bounded restart state machine.
+author: megumii
+license: MIT
+requires_hermes: ">=0.22.0"
+provides_tools:
+  - service_list
+  - service_triage
+  - service_repair
+provides_hooks:
+  - on_session_start
+capabilities: []
