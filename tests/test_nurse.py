@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hermes_nurse import backends, repair, triage  # noqa: E402
+from hermes_nurse import tools as tools_mod  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -365,3 +366,49 @@ def test_service_repair_returns_string_under_dispatch(monkeypatch):
     out = tools.service_repair({"service": "unit-test", "action": "restart", "confirm": True})
     assert isinstance(out, str)
     assert json.loads(out)["blocked"] is True
+
+
+def test_single_recent_restart_is_not_a_crash_loop():
+    """One restart on a young process is an event, not a pattern.
+
+    hermes-gateway.service with 1 restart after 220s reads as 16/hour by rate
+    alone, which libelled a deliberate restart as a crash loop. A real loop
+    restarts many times; requiring 2 restarts costs nothing and removes the
+    false positive.
+    """
+    young = svc(state="running", restarts=1, uptime_seconds=220)
+    assert repair._restart_rate(young) > repair.CRASH_LOOP_PER_HOUR
+    assert repair.is_crash_loop(young) is False
+
+    # Two restarts in the same window IS a loop and must still be caught.
+    looping = svc(state="running", restarts=2, uptime_seconds=220)
+    assert repair.is_crash_loop(looping) is True
+
+
+def test_collect_deduplicates_systemd_units(monkeypatch):
+    """list-unit-files can report a unit twice; duplicate rows inflate every
+    count and show the same service twice in the table."""
+    dup = svc(name="dbus-broker.service", supervisor="systemd", state="running")
+    monkeypatch.setattr(backends, "pm2_available", lambda: False)
+    monkeypatch.setattr(backends, "systemd_available", lambda user=True: True)
+    monkeypatch.setattr(backends, "systemd_services", lambda user=True, include_inactive=True: [dup, dup])
+
+    result = backends.collect(include_pm2=False)
+    names = [s.name for s in result["services"]]
+    assert names.count("dbus-broker.service") == 1
+
+
+def test_only_problems_uses_the_same_rule_as_the_guard(monkeypatch):
+    """service_list must never report crash_loop: false on a row it filtered in
+    as a problem — that was two different definitions of unstable in one tool."""
+    stable = svc(name="stable", state="running", restarts=15, uptime_seconds=86400)
+    unstable = svc(name="unstable", state="running", restarts=30, uptime_seconds=600)
+    monkeypatch.setattr(tools_mod.backends, "collect",
+                        lambda **_: {"services": [stable, unstable], "errors": []})
+
+    out = json.loads(tools_mod.service_list({"only_problems": True}))
+    names = [r["name"] for r in out["services"]]
+    assert "unstable" in names
+    assert "stable" not in names, "15 restarts over a day is not unstable"
+    for row in out["services"]:
+        assert row["crash_loop"] is True, "a filtered-in row must be flagged as a problem"

@@ -31,6 +31,10 @@ SYSTEMD_VERBS = {"restart", "start", "stop", "reset-failed"}
 CRASH_LOOP_RESTARTS = 10
 CRASH_LOOP_UPTIME = 600           # seconds
 CRASH_LOOP_PER_HOUR = 5.0         # restarts/hour above this = unstable
+# A rate alone libels a young process: one manual restart 200s after launch
+# reads as 18/hour. Require a second restart before calling anything unstable —
+# a real crash loop reaches this within seconds, a deliberate restart never does.
+CRASH_LOOP_MIN_RESTARTS = 2
 COOLDOWN_SECONDS = 120            # minimum gap between agent-issued restarts
 MAX_ATTEMPTS_PER_HOUR = 3
 
@@ -96,6 +100,10 @@ def is_crash_loop(service: Service) -> bool:
     number alone must never block a repair; only restarts that outpace the uptime
     of the run in front of us do.
     """
+    if service.restarts < CRASH_LOOP_MIN_RESTARTS:
+        # One restart is an event, not a pattern — and the most common single
+        # restart is a deliberate one issued moments ago by this very tool.
+        return False
     rate = _restart_rate(service)
     if rate is None:
         # Under a minute of life the sample is meaningless either way (pm2's

@@ -85,10 +85,13 @@ def service_list(args: Any = None, **kwargs: Any) -> str:
     services = collected["services"]
 
     if only_problems:
+        # Same definition of "unstable" as the repair guard: restarts per hour
+        # over the current lifetime, not the cumulative counter. Using the raw
+        # count here flagged a service with 15 restarts last week and showed
+        # crash_loop: false on the very same row — two answers to one question.
         services = [
             s for s in services
-            if s.state in ("stopped", "errored")
-            or s.restarts >= repair.CRASH_LOOP_RESTARTS
+            if s.state in ("stopped", "errored") or repair.is_crash_loop(s)
         ]
 
     services.sort(key=lambda s: (s.supervisor, s.name))
@@ -104,8 +107,7 @@ def service_list(args: Any = None, **kwargs: Any) -> str:
             "memory": _fmt_bytes(s.memory_bytes),
             "uptime": _fmt_uptime(s.uptime_seconds),
             "exit_code": s.exit_code,
-            "crash_loop": s.restarts >= repair.CRASH_LOOP_RESTARTS
-            and (s.uptime_seconds or 0) < repair.CRASH_LOOP_UPTIME,
+            "crash_loop": repair.is_crash_loop(s),
             "script": s.script,
         })
 

@@ -295,4 +295,17 @@ def collect(
         else:
             errors.append("systemctl unavailable for this user session")
 
-    return {"services": services, "errors": errors}
+    # One row per (supervisor, name). list-unit-files can report a unit twice
+    # under different enable states and the per-loop guard inside
+    # systemd_services does not always see them as equal strings; a duplicate
+    # row inflates every count and shows the same service twice in the table.
+    unique: List[Service] = []
+    seen: set = set()
+    for svc in services:
+        key = (svc.supervisor, svc.name)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(svc)
+
+    return {"services": unique, "errors": errors}
