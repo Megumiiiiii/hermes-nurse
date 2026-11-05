@@ -97,7 +97,7 @@ just restarted is healthy until its own uptime proves otherwise.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 34 tests
+python -m pytest -q             # 42 tests
 ```
 
 The suite encodes bugs found against a real machine (rotated log files, the
