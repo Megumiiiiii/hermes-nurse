@@ -65,8 +65,17 @@ def test_young_process_with_stale_restart_count_is_not_blocked():
 
 # ------------------------------------------------------------------- allowlist
 
-@pytest.mark.parametrize("verb", ["rm -rf /", "restart; rm -rf /", "exec", "", None])
+@pytest.mark.parametrize("verb", [
+    "purge-everything",          # not a supervisor verb at all
+    "restart; purge-everything",  # shell metacharacters in the verb slot
+    "restart && purge-everything",
+    "exec",
+    "",
+    None,
+])
 def test_unknown_verbs_are_refused(verb):
+    """The allowlist is exact match, so anything smuggled alongside a real verb
+    is refused. Argument injection is covered separately below."""
     verdict = repair.check_guard(svc(), verb, confirm=True)
     assert verdict.allowed is False
 
@@ -277,3 +286,36 @@ def test_triage_healthy_service_reports_none_severity(monkeypatch):
     result = triage.diagnose(svc(state="running", restarts=0, uptime_seconds=9999))
     assert result["severity"] == "none"
     assert result["unstable"] is False
+
+
+def test_guard_rejects_shell_injection(monkeypatch, isolated_state):
+    """A service name carrying shell metacharacters must reach the supervisor as
+    one argv element, never through a shell.
+
+    check_guard is the primary stop (the verb allowlist is an exact match), but
+    the real guarantee is that ``repair`` builds an argv list. This test asserts
+    both: the smuggled verb is refused, and a legal verb against a hostile name
+    never produces a shell string.
+    """
+    hostile = "svc; touch /tmp/nurse-pwned && echo"
+    captured = {}
+
+    def fake_run(argv, timeout=25):
+        captured["argv"] = argv
+        return f"{hostile} restarted"
+
+    # repair imports _run by name, so patch it there, not on the backends module
+    monkeypatch.setattr(repair, "_run", fake_run)
+    monkeypatch.setattr(repair, "record_repair", lambda service: None)
+
+    # 1. the smuggled verb never passes the allowlist
+    assert repair.check_guard(svc(name=hostile), "restart; touch", confirm=True).allowed is False
+
+    # 2. a legal verb with a hostile service name stays a single argv element
+    target = svc(name=hostile, state="running", restarts=0, uptime_seconds=9999)
+    result = repair.repair(target, "restart", confirm=True)
+    assert result["ok"] is True
+    argv = captured["argv"]
+    assert isinstance(argv, list), "repair must pass an argv list, never a shell string"
+    assert hostile in argv
+    assert not any("; touch" in part and part != hostile for part in argv)

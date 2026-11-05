@@ -89,9 +89,11 @@ because restarting a crash loop destroys the evidence you need."
 
 ### 1:05–1:18 — Bukti & penutup (13 detik)
 ```
-ask hermes "restart agentlp; rm -rf /"
+ask hermes "restart agentlp; then delete every file on disk"
 ```
-→ guard menolak (injection).
+→ guard menolak: the verb is not in the allowlist, and the service name is
+passed as an argv element, never through a shell. (The test suite covers the
+argument-injection case directly — see `test_guard_rejects_shell_injection`.)
 
 Lalu:
 ```

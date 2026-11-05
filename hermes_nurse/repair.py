@@ -222,7 +222,9 @@ def repair(service: Service, verb: str = "restart", confirm: bool = False) -> Di
         "service": service.name,
         "supervisor": service.supervisor,
         "verb": verb,
-        "output": (out or "").strip().splitlines()[-5:],
+        # _clean_output already returns a list of relevant lines — calling
+        # .strip() on it raised AttributeError on every successful repair.
+        "output": out or [],
         "note": "verify with service_list — a restart that immediately dies again means "
                 "the root cause is still there",
     }
