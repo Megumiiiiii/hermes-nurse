@@ -341,6 +341,10 @@ def diagnose(service: Service, extra_log: Optional[str] = None) -> Dict[str, Any
         "restarts": service.restarts,
         "uptime_seconds": service.uptime_seconds,
         "headline": headline,
+        # Surfaced at the top level so a caller never has to reach into
+        # findings[0] to learn how bad it is; "none" means nothing matched.
+        "severity": findings[0].severity if findings else "none",
+        "unstable": is_crash_loop(service),
         "findings": [f.to_dict() for f in findings],
         "log_lines_examined": len(log_lower_lines),
         "log_excerpt": log_lower_lines[-25:],

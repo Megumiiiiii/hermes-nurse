@@ -257,3 +257,23 @@ def test_session_snapshot_detects_service_that_died(monkeypatch, tmp_path):
     plugin._on_session_start()
     snap = json.loads((tmp_path / "last-snapshot.json").read_text())
     assert snap["went_down"] == ["pm2:bot"]
+
+
+def test_triage_exposes_severity_and_unstable(monkeypatch):
+    """Callers must not have to reach into findings[0] for severity, and the
+    crash-loop flag must agree with the guard."""
+    monkeypatch.setattr(triage, "_service_log",
+                        lambda service: "Error: ECONNREFUSED 127.0.0.1:6379")
+    result = triage.diagnose(svc(state="running", restarts=30, uptime_seconds=60))
+    # A crash loop outranks the log fingerprint that happens to come with it:
+    # 30 restarts in 60s is the finding that matters, not the ECONNREFUSED line.
+    assert result["headline"] == "unstable_restarts"
+    assert result["severity"] == "critical"
+    assert result["unstable"] is True
+
+
+def test_triage_healthy_service_reports_none_severity(monkeypatch):
+    monkeypatch.setattr(triage, "_service_log", lambda service: "all good")
+    result = triage.diagnose(svc(state="running", restarts=0, uptime_seconds=9999))
+    assert result["severity"] == "none"
+    assert result["unstable"] is False
