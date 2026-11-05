@@ -14,6 +14,14 @@ bots. When one dies at 3am you get a restart counter and a log file. Reading
 that by hand is the job — and it is exactly the job an agent should do, if it
 has tools that reach the supervisor instead of only the shell.
 
+The restart counter is the part most tools get wrong. `pm2`'s counter is
+**cumulative for the entry**: a service restarted fifteen times last week and
+started fresh an hour ago still reports fifteen. Sort by it and a healthy
+service outranks a dying one. `hermes-nurse` measures **restarts per hour over
+the current lifetime** instead, so 13 restarts across 48 hours reads as healthy
+and 47 restarts across 3 hours reads as a crash loop — which is what each
+actually is.
+
 ## Tools
 
 | Tool | What it does |
@@ -39,17 +47,18 @@ hermes plugins install Megumiiiiii/hermes-nurse
 hermes plugins enable nurse
 ```
 
-Then make the `nurse` toolset visible on your platform. Hermes only loads
-toolsets listed in `platform_toolsets`, and a plugin toolset is not added
-automatically:
+Nothing else. Plugin toolsets are enabled by default on every platform, so the
+three tools are available on the CLI, the messaging platforms and the desktop
+app as soon as the plugin is enabled.
+
+One Hermes-side caveat: with `tools.tool_search` left at its default, plugin
+tools are deferred and the model has to *search* for them, which it does badly
+when the name does not match the words in your question. Turning that off makes
+them eager:
 
 ```bash
-hermes config set platform_toolsets.cli '["browser","clarify","code_execution","cronjob","delegation","file","memory","nurse","session_search","skills","terminal","todo","tts","vision","web"]'
+hermes config set tools.tool_search.enabled off
 ```
-
-If you use tool search, note that plugin tools are deferred by default. Set
-`tools.tool_search.enabled: off` (or keep the three `service_*` names eager)
-or the model will have to search for them before every call.
 
 ## Guard rails (why the repair tool is safe to hand an agent)
 
@@ -57,19 +66,45 @@ Handing an agent `pm2 restart` is how you turn a crash into an outage. Four
 rules exist for that:
 
 1. **Allowlist only.** Verbs are `restart`/`start`/`stop`/`reload`/`reset-failed`.
-   There is no "run this command" escape hatch.
+   There is no "run this command" escape hatch; the service name is passed as
+   its own `argv` element so it never reaches a shell.
 2. **Crash-loop refusal.** A service restarting faster than 5 times per hour is
    refused, with the rate named. Restarting it again only burns the same
-   failing path.
+   failing path — and it destroys the log evidence of why it was dying.
 3. **Cooldown ledger.** One repair per service every 2 minutes, 3 per hour,
    persisted to disk so a fresh Hermes session inherits the cooldown instead of
    starting clean.
 4. **Confirmation required.** The first call returns a plan; nothing changes
    until the model passes `confirm=true` after telling you what will restart.
 
-A brand-new process is never declared unstable: pm2's restart counter is
-cumulative for the entry, so a service that crashed 15 times last week but was
-just restarted is healthy until its own uptime proves otherwise.
+A brand-new process is never declared unstable: a single restart is an event,
+not a pattern, and the most common single restart is a deliberate one issued
+moments ago by this very tool.
+
+## Bugs found while building this
+
+The suite is a regression fence, not a coverage exercise — every test below
+encodes something that actually broke against a real machine, most of them
+found only by running the tools for real rather than by reading the code.
+
+1. **Handlers never ran under Hermes.** Hermes dispatches a plugin tool as
+   `handler(args_dict, **kwargs)`; handlers declared with individual parameters
+   received the dict in their first slot and raised `AttributeError` inside the
+   domain code. The whole suite passed because tests called the functions the
+   Python way. Two tests now drive the handlers exactly as the registry does.
+2. **Every successful repair crashed.** `_clean_output()` returns a list of
+   relevant lines, and the caller then called `.strip()` on it.
+3. **Two definitions of "unstable" in one tool.** The list filter used the
+   cumulative count while the same row printed `crash_loop: false`. Both now
+   call the same predicate, so a row that was filtered in is necessarily
+   flagged.
+4. **One restart was reported as a crash loop.** A gateway restarted once, 220
+   seconds after launch, reads as 16 restarts/hour. A minimum of two restarts
+   removes the false positive without weakening the real case.
+5. **Duplicate service rows.** `systemctl list-unit-files` can emit the same
+   unit twice; rows are deduplicated by `(supervisor, name)`.
+6. **`severity` was buried in `findings[0]`.** Callers had to reach inside the
+   first finding to learn how bad a service is; it is now a top-level field.
 
 ## Requirements
 
@@ -97,12 +132,8 @@ just restarted is healthy until its own uptime proves otherwise.
 ## Tests
 
 ```bash
-python -m pytest -q             # 42 tests
+python -m pytest -q             # 45 tests
 ```
-
-The suite encodes bugs found against a real machine (rotated log files, the
-cumulative restart counter, a crash rate over a long uptime), so it acts as a
-regression fence rather than a coverage exercise.
 
 ## License
 
