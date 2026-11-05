@@ -83,7 +83,7 @@ FINGERPRINTS: List[Fingerprint] = [
     ),
     _fp(
         "missing_env", "critical",
-        r"Missing required env|environment variable .* (?:is )?not set|"
+        r"Missing required environment|variable .{1,40} is not set|"
         r"KeyError: '(?:[A-Z_]{3,})'|Unauthorized: no credentials|"
         r"API key (?:is )?(?:missing|not configured)",
         "A required environment variable or credential is absent from the "

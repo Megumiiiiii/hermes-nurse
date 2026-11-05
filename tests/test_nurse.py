@@ -17,9 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import backends  # noqa: E402
-import repair  # noqa: E402
-import triage  # noqa: E402
+from hermes_nurse import backends, repair, triage  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -135,9 +133,15 @@ def test_fingerprints(monkeypatch, logline, expected):
     assert expected in causes
 
 
-def test_missing_env_var_detected(monkeypatch):
-    monkeypatch.setattr(triage, "_service_log",
-                        lambda service: "KeyError: 'SOLANA_RPC_URL'")
+@pytest.mark.parametrize("line", [
+    "KeyError: 'SOLANA_RPC_URL'",
+    "Missing required environment: DATABASE_URL",
+    "Environment variable DATABASE_URL is not set",
+])
+def test_missing_env_var_detected(monkeypatch, line):
+    """All three spellings must reach missing_env — the regex was narrowed once
+    because a scanner read its prose form as an environment dump."""
+    monkeypatch.setattr(triage, "_service_log", lambda service: line)
     result = triage.diagnose(svc(state="errored"))
     assert result["headline"] == "missing_env"
 
@@ -243,7 +247,7 @@ def test_systemd_show_parses_unit(monkeypatch):
 
 def test_session_snapshot_detects_service_that_died(monkeypatch, tmp_path):
     import importlib
-    plugin = importlib.import_module("__init__")
+    plugin = importlib.import_module("hermes_nurse")
     states = iter([
         {"pm2:bot": "running", "pm2:other": "running"},
         {"pm2:bot": "stopped", "pm2:other": "running"},
