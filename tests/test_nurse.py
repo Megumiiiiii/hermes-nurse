@@ -319,3 +319,49 @@ def test_guard_rejects_shell_injection(monkeypatch, isolated_state):
     assert isinstance(argv, list), "repair must pass an argv list, never a shell string"
     assert hostile in argv
     assert not any("; touch" in part and part != hostile for part in argv)
+
+
+def test_handlers_accept_hermes_dispatch_shape(monkeypatch):
+    """Hermes calls a plugin handler as ``handler(args_dict)``.
+
+    Every handler used to declare its parameters individually, so the dict
+    landed in the first positional slot and the tool raised AttributeError on
+    every real call while the whole suite passed. This test drives the handlers
+    exactly the way tools/registry.py does.
+    """
+    from hermes_nurse import tools
+
+    svc_obj = svc(name="unit-test", state="running", restarts=0, uptime_seconds=9999)
+    monkeypatch.setattr(tools.backends, "collect",
+                        lambda **_: {"services": [svc_obj], "errors": []})
+    monkeypatch.setattr(tools.triage, "_service_log", lambda service: "all good")
+
+    # dispatch shape: one positional dict
+    listed = json.loads(tools.service_list({"only_problems": False}))
+    assert listed["success"] is True
+    assert listed["count"] == 1
+
+    triaged = json.loads(tools.service_triage({"service": "unit-test"}))
+    assert triaged["success"] is True
+    assert triaged["severity"] == "none"
+
+    # direct keyword shape must keep working (tests and CLI callers)
+    kwargs_listed = json.loads(tools.service_list(only_problems=False))
+    assert kwargs_listed["count"] == 1
+
+
+def test_service_repair_returns_string_under_dispatch(monkeypatch):
+    """The repair handler must return a JSON string, never a dict — Hermes
+    rejects non-string handler results."""
+    from hermes_nurse import tools
+
+    svc_obj = svc(name="unit-test", state="running", restarts=0, uptime_seconds=9999)
+    monkeypatch.setattr(tools.backends, "collect",
+                        lambda **_: {"services": [svc_obj], "errors": []})
+    monkeypatch.setattr(tools.repair, "repair",
+                        lambda service, verb="restart", confirm=False:
+                        {"ok": False, "blocked": True, "reason": "test"})
+
+    out = tools.service_repair({"service": "unit-test", "action": "restart", "confirm": True})
+    assert isinstance(out, str)
+    assert json.loads(out)["blocked"] is True

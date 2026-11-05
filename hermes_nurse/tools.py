@@ -11,6 +11,26 @@ from typing import Any, Dict, List, Optional
 from . import backends, repair, triage
 
 
+def _args(args: Any = None, kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Normalize how a handler was invoked.
+
+    Hermes dispatches a plugin tool as ``handler(args_dict)`` (``tools/registry``
+    calls ``entry.handler(args, **kwargs)``), so a handler that declared its
+    parameters individually silently received a dict as its first argument.
+    Direct calls and tests pass keywords instead. Accept both.
+    """
+    merged: Dict[str, Any] = {}
+    if isinstance(args, dict):
+        merged.update(args)
+    elif args is not None:
+        # A bare positional non-dict means the caller passed a single value;
+        # treat it as the first documented parameter of the handler.
+        merged["__positional__"] = args
+    if kwargs:
+        merged.update(kwargs)
+    return merged
+
+
 def _ok(payload: Dict[str, Any]) -> str:
     payload.setdefault("success", True)
     return json.dumps(payload, indent=2, default=str)
@@ -45,12 +65,14 @@ def _fmt_uptime(seconds: Optional[float]) -> str:
     return f"{s // 86400}d{(s % 86400) // 3600:02d}h"
 
 
-def service_list(
-    only_problems: bool = False,
-    supervisor: str = "all",
-    include_system_units: bool = False,
-    **_: Any,
-) -> str:
+def service_list(args: Any = None, **kwargs: Any) -> str:
+    """Hermes calls a plugin handler as ``handler(args_dict)`` — the arguments
+    arrive as one dict, not as keyword arguments. Accepting them individually
+    meant ``only_problems`` received a dict and every call raised."""
+    a = _args(args, kwargs)
+    only_problems = bool(a.get("only_problems", False))
+    supervisor = str(a.get("supervisor") or "all")
+    include_system_units = bool(a.get("include_system_units", False))
     try:
         collected = backends.collect(
             user_systemd=not include_system_units,
@@ -98,7 +120,10 @@ def service_list(
     })
 
 
-def service_triage(service: str, log_lines: int = 120, **_: Any) -> str:
+def service_triage(args: Any = None, **kwargs: Any) -> str:
+    a = _args(args, kwargs)
+    service = str(a.get("service") or kwargs.get("service") or a.get("__positional__") or "")
+    log_lines = int(a.get("log_lines") or 120)
     try:
         collected = backends.collect()
     except Exception as exc:  # noqa: BLE001
@@ -122,12 +147,11 @@ def service_triage(service: str, log_lines: int = 120, **_: Any) -> str:
     return json.dumps(result, indent=2, default=str)
 
 
-def service_repair(
-    service: str,
-    action: str = "restart",
-    confirm: bool = False,
-    **_: Any,
-) -> str:
+def service_repair(args: Any = None, **kwargs: Any) -> str:
+    a = _args(args, kwargs)
+    service = str(a.get("service") or kwargs.get("service") or a.get("__positional__") or "")
+    action = str(a.get("action") or "restart")
+    confirm = bool(a.get("confirm", False))
     try:
         collected = backends.collect()
     except Exception as exc:  # noqa: BLE001
