@@ -32,6 +32,22 @@ class BackendError(RuntimeError):
     """A supervisor CLI is missing, refused, or returned unparsable output."""
 
 
+def _hermes_home() -> str:
+    """Resolve the active Hermes home, profile-aware.
+
+    ``hermes_constants.get_hermes_home()`` is the only resolver that knows a
+    profile is active; reading ``HERMES_HOME`` by hand silently lands in the
+    default home for every profile. The import is deferred and guarded so the
+    plugin still works when it is loaded outside a Hermes process (pytest, a
+    plain interpreter).
+    """
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore[import-not-found]
+        return str(get_hermes_home())
+    except Exception:  # noqa: BLE001 - not running inside Hermes
+        return os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+
+
 @dataclass
 class Service:
     """One supervised unit, normalised across supervisors."""

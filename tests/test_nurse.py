@@ -412,3 +412,117 @@ def test_only_problems_uses_the_same_rule_as_the_guard(monkeypatch):
     assert "stable" not in names, "15 restarts over a day is not unstable"
     for row in out["services"]:
         assert row["crash_loop"] is True, "a filtered-in row must be flagged as a problem"
+
+
+# ------------------------------------------------- review fixes (Nous, 72958b6f)
+
+def test_stop_and_reload_need_confirmation_too():
+    """`stop`/`reload` used to run on the first call with neither confirm nor
+    cooldown, which made the README's "nothing changes without confirm" false —
+    and `stop` on a gateway is an outage.
+    """
+    running = svc(state="running", pid=1, uptime_seconds=7200, restarts=0)
+    for verb in ("stop", "reload", "reset"):
+        verdict = repair.check_guard(running, verb, confirm=False)
+        assert verdict.allowed is True
+        assert verdict.needs_confirmation is True, verb
+        assert repair.check_guard(running, verb, confirm=True).allowed is True, verb
+
+
+def test_stop_is_rate_limited():
+    """A stop must obey the same ledger as a restart: a model in a retry loop
+    could otherwise stop the same service repeatedly."""
+    running = svc(state="running", pid=1, uptime_seconds=7200, restarts=0)
+    repair.record_repair(running)
+    verdict = repair.check_guard(running, "stop", confirm=True)
+    assert verdict.allowed is False
+    assert "cooling down" in verdict.reason
+
+
+def test_stop_is_still_allowed_for_a_crash_looping_service():
+    """Stopping a crash loop is the repair you want; the crash-loop refusal
+    belongs to restart/start only."""
+    looping = svc(state="running", restarts=8, uptime_seconds=600)
+    assert repair.is_crash_loop(looping) is True
+    assert repair.check_guard(looping, "restart", confirm=True).allowed is False
+    assert repair.check_guard(looping, "stop", confirm=True).allowed is True
+
+
+def test_state_changing_repair_is_escalated_to_the_human_gate():
+    """`confirm` is a flag the model passes to itself, so on the gateway or in a
+    cron run it is not a second party. Every state-changing verb must return an
+    `approve` directive so Hermes' own approval prompt decides.
+    """
+    from hermes_nurse import _on_pre_tool_call as hook
+
+    for verb in ("restart", "start", "stop", "reload", "reset-failed"):
+        directive = hook(tool_name="service_repair",
+                         args={"service": "hermes-gateway", "action": verb, "confirm": True})
+        assert directive == {"action": "approve", "message": f"{verb} hermes-gateway"}, verb
+
+
+def test_plan_only_repair_is_not_escalated():
+    """A confirm=false call changes nothing; escalating it would train the user
+    to approve prompts that cannot do anything."""
+    from hermes_nurse import _on_pre_tool_call as hook
+
+    for args in ({"service": "app", "action": "restart", "confirm": False},
+                 {"service": "app", "action": "restart"},
+                 {"service": "app"}):
+        assert hook(tool_name="service_repair", args=args) is None, args
+
+
+def test_hook_ignores_other_tools_and_unknown_verbs():
+    from hermes_nurse import _on_pre_tool_call as hook
+
+    assert hook(tool_name="service_list", args={"confirm": True}) is None
+    assert hook(tool_name="service_repair",
+                args={"service": "app", "action": "restart; touch /tmp/x", "confirm": True}) is None
+
+
+def test_hook_records_the_verb_and_service_it_will_touch():
+    """A prompt that says only "approve?" is useless; it must name the change."""
+    from hermes_nurse import _on_pre_tool_call as hook
+
+    directive = hook(tool_name="service_repair", args={"service": "agentlp", "action": "stop", "confirm": True})
+    assert directive["message"] == "stop agentlp"
+
+
+def test_hook_is_registered():
+    """A hook written but never registered protects nothing."""
+    from hermes_nurse import register
+
+    class _Ctx:
+        def __init__(self):
+            self.tools, self.hooks = [], []
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs.get("name"))
+
+        def register_hook(self, name, fn):
+            self.hooks.append(name)
+
+    ctx = _Ctx()
+    register(ctx)
+    assert "pre_tool_call" in ctx.hooks
+    assert "on_session_start" in ctx.hooks
+
+
+def test_data_dir_uses_the_profile_aware_resolver(monkeypatch, tmp_path):
+    """Reading HERMES_HOME by hand lands in the default home for every profile;
+    get_hermes_home() is the only resolver that knows a profile is active."""
+    profile_home = tmp_path / "profiles" / "work"
+    monkeypatch.delenv("HERMES_PLUGIN_DATA_DIR", raising=False)
+    monkeypatch.setattr(backends, "_hermes_home", lambda: str(profile_home))
+
+    assert repair._data_dir() == str(profile_home / "plugin-data" / "nurse")
+
+    from hermes_nurse import _state_dir
+    assert _state_dir() == str(profile_home / "plugin-data" / "nurse")
+
+
+def test_hermes_home_falls_back_outside_a_hermes_process(monkeypatch, tmp_path):
+    """The plugin must still import and run under pytest / a bare interpreter."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setitem(sys.modules, "hermes_constants", None)
+    assert backends._hermes_home() == str(tmp_path / "home")

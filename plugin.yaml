@@ -13,4 +13,5 @@ provides_tools:
   - service_repair
 provides_hooks:
   - on_session_start
+  - pre_tool_call
 capabilities: []

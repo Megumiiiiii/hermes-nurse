@@ -12,11 +12,17 @@ import os
 import time
 from typing import Any, Dict
 
+from . import backends as _backends
 from . import schemas, tools
 
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_NAME = "last-snapshot.json"
+
+# Verbs that change state. All of them — including `stop` and `reload` — go
+# through Hermes' human-approval gate, because the model's own `confirm` flag is
+# not a human: under the gateway or a cron run nothing sits in front of it.
+_STATE_CHANGING_VERBS = {"restart", "start", "stop", "reload", "reset", "reset-failed"}
 
 
 def _state_dir() -> str:
@@ -24,8 +30,7 @@ def _state_dir() -> str:
     if env:
         base = env
     else:
-        home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-        base = os.path.join(home, "plugin-data", "nurse")
+        base = os.path.join(_backends._hermes_home(), "plugin-data", "nurse")
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -98,6 +103,32 @@ def _on_session_start(**_kwargs: Any) -> None:
     _write_snapshot({"states": current, "updated_at": time.time(), "went_down": died})
 
 
+def _on_pre_tool_call(tool_name: str = "", args: Any = None, **_kwargs: Any) -> Any:
+    """Escalate every state-changing service_repair call to the human gate.
+
+    ``confirm`` is a flag the model passes to itself, so on the gateway or in a
+    cron run it is not a second party at all: the agent could stop a gateway, a
+    tunnel or any user unit with nothing in front of it. Returning ``approve``
+    hands the call to Hermes' own approval prompt — the same gate a `pm2 stop`
+    typed into the terminal tool hits. A plan-only call (``confirm`` false or
+    absent) changes nothing and is left alone, so diagnosis stays unattended.
+
+    The cooldown ledger and the crash-loop refusal still run afterwards: this
+    hook adds a human, it does not replace the other guards.
+    """
+    if tool_name != "service_repair":
+        return None
+    a = args if isinstance(args, dict) else {}
+    verb = str(a.get("action") or "restart")
+    if verb not in _STATE_CHANGING_VERBS:
+        return None
+    if not bool(a.get("confirm")):
+        return None
+    name = a.get("service")
+    target = name if isinstance(name, str) and name else "service"
+    return {"action": "approve", "message": f"{verb} {target}"}
+
+
 def register(ctx) -> None:
     """Wire schemas to handlers and register the session-start hook."""
     ctx.register_tool(
@@ -125,3 +156,4 @@ def register(ctx) -> None:
         emoji="🔧",
     )
     ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)

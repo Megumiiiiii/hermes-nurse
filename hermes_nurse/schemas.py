@@ -59,10 +59,11 @@ SERVICE_REPAIR = {
     "name": "service_repair",
     "description": (
         "Repair a supervised service: restart, start, stop, reload (pm2 only) or "
-        "reset-failed (systemd only). Guarded: refuses services in a crash loop, "
-        "rate-limits to one repair per service every 2 minutes and 3 per hour, and "
-        "requires confirm=true before changing anything. Always run service_triage "
-        "first so the repair targets the real cause."
+        "reset-failed (systemd only). Guarded: every state-changing verb requires "
+        "confirm=true (the first call returns a plan) and is escalated to Hermes' "
+        "human approval prompt, plus refuses services in a crash loop and "
+        "rate-limits to one repair per service every 2 minutes and 3 per hour. "
+        "Always run service_triage first so the repair targets the real cause."
     ),
     "parameters": {
         "type": "object",

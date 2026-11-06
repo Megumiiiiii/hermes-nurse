@@ -62,20 +62,26 @@ hermes config set tools.tool_search.enabled off
 
 ## Guard rails (why the repair tool is safe to hand an agent)
 
-Handing an agent `pm2 restart` is how you turn a crash into an outage. Four
+Handing an agent `pm2 restart` is how you turn a crash into an outage. Five
 rules exist for that:
 
 1. **Allowlist only.** Verbs are `restart`/`start`/`stop`/`reload`/`reset-failed`.
    There is no "run this command" escape hatch; the service name is passed as
    its own `argv` element so it never reaches a shell.
-2. **Crash-loop refusal.** A service restarting faster than 5 times per hour is
+2. **Human approval, not model self-approval.** Every state-changing verb raises
+   Hermes' own approval prompt through a `pre_tool_call` hook, the same gate a
+   `pm2 stop` typed into the terminal tool hits. `confirm` alone is not a second
+   party: under the gateway or a cron run the model passes that flag to itself,
+   so it can only ever be an extra guard, never the gate.
+3. **Crash-loop refusal.** A service restarting faster than 5 times per hour is
    refused, with the rate named. Restarting it again only burns the same
    failing path — and it destroys the log evidence of why it was dying.
-3. **Cooldown ledger.** One repair per service every 2 minutes, 3 per hour,
+4. **Cooldown ledger.** One repair per service every 2 minutes, 3 per hour,
    persisted to disk so a fresh Hermes session inherits the cooldown instead of
    starting clean.
-4. **Confirmation required.** The first call returns a plan; nothing changes
-   until the model passes `confirm=true` after telling you what will restart.
+5. **Confirmation required.** The first call returns a plan; nothing changes
+   until the model passes `confirm=true` after telling you what will restore —
+   and then the human approval prompt above still has to say yes.
 
 A brand-new process is never declared unstable: a single restart is an event,
 not a pattern, and the most common single restart is a deliberate one issued
@@ -122,8 +128,9 @@ found only by running the tools for real rather than by reading the code.
 - **Writes:** a restart ledger and a session snapshot under
   `$HERMES_HOME/plugin-data/nurse/` (falls back to
   `$HERMES_PLUGIN_DATA_DIR`). No other files are written.
-- **Changes state:** only `service_repair`, and only for the named service,
-  after a confirmation flag. It never edits unit files, config, or code.
+- **Changes state:** only `service_repair`, and only for the named service and
+  verb, and only after `confirm=true` *and* a yes at Hermes' human approval
+  prompt. It never edits unit files, config, or code.
 - **Network:** none. The plugin makes no outbound calls.
 - **Credentials:** it reads no secrets and has no `requires_env`.
 - **User/system scope:** systemd reads user units by default. Root units require

@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from . import backends as _backends
 from .backends import BackendError, Service, _run, _systemctl
 
 # Allowed repair verbs per supervisor. Anything else is refused.
@@ -40,13 +41,17 @@ MAX_ATTEMPTS_PER_HOUR = 3
 
 
 def _data_dir() -> str:
-    """Profile-scoped plugin data dir, falling back to a safe local path."""
+    """Profile-scoped plugin data dir, falling back to a safe local path.
+
+    ``get_hermes_home()`` is the one resolver that knows about profiles;
+    ``HERMES_HOME`` alone misses an active profile and silently shares one
+    ledger across every profile on the box.
+    """
     env = os.environ.get("HERMES_PLUGIN_DATA_DIR")
     if env:
         path = env
     else:
-        home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-        path = os.path.join(home, "plugin-data", "nurse")
+        path = os.path.join(_backends._hermes_home(), "plugin-data", "nurse")
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -132,40 +137,46 @@ def check_guard(service: Service, verb: str, confirm: bool = False) -> GuardVerd
     if verb not in allowed_verbs:
         return GuardVerdict(False, f"verb '{verb}' is not supported by {service.supervisor}")
 
-    if verb in ("restart", "start"):
-        now = time.time()
-        history = load_ledger().get(_key(service), [])
-        recent = [t for t in history if now - t < 3600]
-        if recent and now - recent[-1] < COOLDOWN_SECONDS:
-            wait = int(COOLDOWN_SECONDS - (now - recent[-1]))
-            return GuardVerdict(
-                False,
-                f"cooling down: {service.name} was repaired "
-                f"{int(now - recent[-1])}s ago; wait {wait}s before trying again.",
-            )
+    # Every state-changing verb is gated, not just restart/start. `stop` on a
+    # gateway or a tunnel is an outage, and it used to run on the first call with
+    # neither confirm nor cooldown — the README promised otherwise.
+    now = time.time()
+    history = load_ledger().get(_key(service), [])
+    recent = [t for t in history if now - t < 3600]
+    if recent and now - recent[-1] < COOLDOWN_SECONDS:
+        wait = int(COOLDOWN_SECONDS - (now - recent[-1]))
+        return GuardVerdict(
+            False,
+            f"cooling down: {service.name} was repaired "
+            f"{int(now - recent[-1])}s ago; wait {wait}s before trying again.",
+        )
 
-        if is_crash_loop(service):
-            rate = _restart_rate(service)
-            rate_txt = f"{rate:.1f} restarts/hour" if rate is not None else "many restarts"
-            return GuardVerdict(
-                False,
-                f"refusing to restart {service.name}: unstable ({service.restarts} "
-                f"restarts, {rate_txt}). Fix the root cause from service_triage first.",
-            )
+    if len(recent) >= MAX_ATTEMPTS_PER_HOUR:
+        return GuardVerdict(
+            False,
+            f"attempt budget exhausted: {len(recent)} repairs in the last hour "
+            f"(max {MAX_ATTEMPTS_PER_HOUR}). This is a persistent fault, not a hiccup.",
+        )
 
-        if len(recent) >= MAX_ATTEMPTS_PER_HOUR:
-            return GuardVerdict(
-                False,
-                f"attempt budget exhausted: {len(recent)} repairs in the last hour "
-                f"(max {MAX_ATTEMPTS_PER_HOUR}). This is a persistent fault, not a hiccup.",
-            )
+    # Restarting something that cannot stay up only burns the same failing path
+    # and destroys the log evidence. `start` on a stopped service and `stop` on a
+    # running one are the two repairs that can still be the right move, so the
+    # crash-loop refusal applies to restart/start only.
+    if verb in ("restart", "start") and is_crash_loop(service):
+        rate = _restart_rate(service)
+        rate_txt = f"{rate:.1f} restarts/hour" if rate is not None else "many restarts"
+        return GuardVerdict(
+            False,
+            f"refusing to restart {service.name}: unstable ({service.restarts} "
+            f"restarts, {rate_txt}). Fix the root cause from service_triage first.",
+        )
 
-        if not confirm:
-            return GuardVerdict(
-                True,
-                f"{verb} {service.supervisor} service {service.name} — confirmation required",
-                needs_confirmation=True,
-            )
+    if not confirm:
+        return GuardVerdict(
+            True,
+            f"{verb} {service.supervisor} service {service.name} — confirmation required",
+            needs_confirmation=True,
+        )
 
     return GuardVerdict(True, "ok")
 
